@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import urllib.error
+import urllib.request
 from typing import Literal
 
 from openai import OpenAI
@@ -44,19 +47,45 @@ def _llm_policy(
         "Return JSON only: {\"action\": \"noop|alert|lock|wipe\"}.\n"
         f"observation={obs.model_dump_json()}"
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-    )
-    content = resp.choices[0].message.content or "{}"
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+        content = resp.choices[0].message.content or "{}"
+    except Exception as exc:
+        print(f"LLM call failed, using fallback policy: {exc}", file=sys.stderr)
+        return _fallback_policy(obs)
+
     try:
         action = json.loads(content).get("action", "noop")
     except Exception:
-        action = "noop"
+        print("LLM response parse failed, using fallback policy", file=sys.stderr)
+        return _fallback_policy(obs)
     if action not in {"noop", "alert", "lock", "wipe"}:
-        action = "noop"
+        print(f"LLM returned invalid action '{action}', using fallback policy", file=sys.stderr)
+        return _fallback_policy(obs)
     return action  # type: ignore[return-value]
+
+
+def _warn_if_env_unreachable(env_base_url: str) -> None:
+    if "huggingface.co/spaces/" in env_base_url:
+        print(
+            "OPENENV_BASE_URL points to a Hugging Face page URL. Use the .hf.space runtime URL instead.",
+            file=sys.stderr,
+        )
+        return
+
+    health_url = f"{env_base_url.rstrip('/')}/health"
+    try:
+        with urllib.request.urlopen(health_url, timeout=5.0) as response:
+            if response.status >= 400:
+                print(f"Health check returned HTTP {response.status} at {health_url}", file=sys.stderr)
+    except urllib.error.URLError as exc:
+        print(f"Health check failed at {health_url}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Health check failed at {health_url}: {exc}", file=sys.stderr)
 
 
 def main() -> None:
@@ -74,28 +103,37 @@ def main() -> None:
 
     total_reward = 0.0
     steps_executed = 0
-    with LaptopSecurityOpenenvEnv(base_url=env_base_url).sync() as env:
-        reset_result = env.reset()
-        obs = reset_result.observation
-        print(f"START threat={obs.threat} risk={obs.risk_score:.2f}")
+    _warn_if_env_unreachable(env_base_url)
+    try:
+        with LaptopSecurityOpenenvEnv(base_url=env_base_url).sync() as env:
+            reset_result = env.reset()
+            obs = reset_result.observation
+            print(f"START threat={obs.threat} risk={obs.risk_score:.2f}")
 
-        for step in range(1, 21):
-            steps_executed = step
-            action_name = (
-                _llm_policy(obs, llm_client, model_name) if llm_client else _fallback_policy(obs)
-            )
-            result = env.step(LaptopSecurityOpenenvAction(action=action_name))
-            obs = result.observation
-            step_reward = float(result.reward or 0.0)
-            total_reward += step_reward
+            for step in range(1, 21):
+                steps_executed = step
+                action_name = (
+                    _llm_policy(obs, llm_client, model_name)
+                    if llm_client
+                    else _fallback_policy(obs)
+                )
+                result = env.step(LaptopSecurityOpenenvAction(action=action_name))
+                obs = result.observation
+                step_reward = float(result.reward or 0.0)
+                total_reward += step_reward
 
-            print(
-                f"STEP step={step} action={action_name} "
-                f"threat={obs.threat} risk={obs.risk_score:.2f} "
-                f"reward={step_reward:.2f} done={result.done}"
-            )
-            if result.done:
-                break
+                print(
+                    f"STEP step={step} action={action_name} "
+                    f"threat={obs.threat} risk={obs.risk_score:.2f} "
+                    f"reward={step_reward:.2f} done={result.done}"
+                )
+                if result.done:
+                    break
+
+    except Exception as exc:
+        print(f"END total_reward={total_reward:.2f} steps={steps_executed}")
+        print(f"Inference failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
     print(f"END total_reward={total_reward:.2f} steps={steps_executed}")
 

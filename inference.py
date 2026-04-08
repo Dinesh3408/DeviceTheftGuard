@@ -25,6 +25,7 @@ from client import LaptopSecurityOpenenvEnv
 from models import LaptopSecurityOpenenvAction, LaptopSecurityOpenenvObservation
 
 ActionName = Literal["noop", "alert", "lock", "wipe"]
+TASK_NAME = "device_theft_guard_openenv"
 
 
 def _fallback_policy(obs: LaptopSecurityOpenenvObservation) -> ActionName:
@@ -108,7 +109,10 @@ def main() -> None:
         with LaptopSecurityOpenenvEnv(base_url=env_base_url).sync() as env:
             reset_result = env.reset()
             obs = reset_result.observation
-            print(f"START threat={obs.threat} risk={obs.risk_score:.2f}")
+            print(
+                f"[START] task={TASK_NAME} threat={obs.threat} risk={obs.risk_score:.2f}",
+                flush=True,
+            )
 
             for step in range(1, 21):
                 steps_executed = step
@@ -123,19 +127,28 @@ def main() -> None:
                 total_reward += step_reward
 
                 print(
-                    f"STEP step={step} action={action_name} "
+                    f"[STEP] step={step} action={action_name} "
                     f"threat={obs.threat} risk={obs.risk_score:.2f} "
-                    f"reward={step_reward:.2f} done={result.done}"
+                    f"reward={step_reward:.2f} done={result.done}",
+                    flush=True,
                 )
                 if result.done:
                     break
 
     except Exception as exc:
-        print(f"END total_reward={total_reward:.2f} steps={steps_executed}")
+        print(
+            f"[END] task={TASK_NAME} status=error score={total_reward:.2f} "
+            f"total_reward={total_reward:.2f} steps={steps_executed}",
+            flush=True,
+        )
         print(f"Inference failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
 
-    print(f"END total_reward={total_reward:.2f} steps={steps_executed}")
+    print(
+        f"[END] task={TASK_NAME} status=ok score={total_reward:.2f} "
+        f"total_reward={total_reward:.2f} steps={steps_executed}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
